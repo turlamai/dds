@@ -18,7 +18,14 @@ communication bindings for Racket-based tooling.
 | P1 | RTPS messages, UDP transport, SPDP discovery | done |
 | P2 | SEDP endpoint discovery, reliable protocol subset (heartbeat/acknack/gap) | planned |
 | P3 | QoS subset (reliable, transient-local, keep-last), programmatic topic types | planned |
-| P4 | Tooling: domain monitor, CDR dissector, replay, SOME/IP-DDS bridge | planned |
+| P4 | Tooling: domain monitor, CDR dissector, replay | planned |
+
+The SOME/IP-DDS bridge and the CAN signal side land as separate
+packages: [`someip`](https://github.com/turlamai/someip) + `dds` stay
+protocol-pure, a `dbc` package adds DBC/CAN signal codecs, and `s2s`
+is the mapping engine with can/someip/dds bindings (the user-space
+take on RTA-VRTE's Signal-to-Service conversion). SEDP (P2) comes
+first — DDS delivery requires endpoint discovery.
 
 `HEARTBEAT`/`ACKNACK`/`GAP` submessages already round-trip at the wire
 layer; the state machines come with P2.

@@ -16,7 +16,12 @@ Racket 的汽车工具链（监听、回放、桥接）。
 | P1 | RTPS 消息、UDP 传输、SPDP 发现 | 完成 |
 | P2 | SEDP 端点发现、可靠协议子集（heartbeat/acknack/gap） | 计划 |
 | P3 | QoS 子集（reliable、transient-local、keep-last）、编程式 topic 类型 | 计划 |
-| P4 | 工具面：域监控、CDR dissector、回放、SOME/IP-DDS 桥 | 计划 |
+| P4 | 工具面：域监控、CDR dissector、回放 | 计划 |
+
+SOME/IP-DDS 桥与 CAN 信号侧拆为独立包：[`someip`](https://github.com/turlamai/someip)
+和 `dds` 保持协议纯净，`dbc` 包提供 DBC/CAN 信号编解码，`s2s` 是映射
+引擎 + can/someip/dds 三种绑定（RTA-VRTE 信号转服务的用户态实现）。
+SEDP（P2）先行——DDS 数据投递必须过端点发现。
 
 `HEARTBEAT`/`ACKNACK`/`GAP` 子消息已在线层完成编解码往返，状态机随
 P2 落地。
