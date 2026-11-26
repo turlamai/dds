@@ -6,15 +6,19 @@
 ;;   (dds entities)   GUIDs, entity ids, locators, well-known ports
 ;;   (dds cdr)        CDR/XCDR1 value codec + encapsulation
 ;;   (dds message)    RTPS 2.3 header/submessages, parameters, DATA,
-;;                    HEARTBEAT, ACKNACK, INFO_TS, INFO_DST
+;;                    HEARTBEAT, ACKNACK, GAP, INFO_TS, INFO_DST
+;;   (dds reliable)   reliable writer/reader state machines
 ;;   (dds transport)  UDP endpoints with multicast join
 ;;   (dds spdp)       participant discovery writer/reader
+;;   (dds sedp)       endpoint discovery over the reliable machines
 ;;   (dds logging)    pluggable logger topic
 
 (require "cdr.rkt"
          "entities.rkt"
          "logging.rkt"
          "message.rkt"
+         "reliable.rkt"
+         "sedp.rkt"
          "spdp.rkt"
          "transport.rkt")
 
@@ -22,5 +26,7 @@
          (all-from-out "entities.rkt")
          (all-from-out "logging.rkt")
          (all-from-out "message.rkt")
+         (all-from-out "reliable.rkt")
+         (all-from-out "sedp.rkt")
          (all-from-out "spdp.rkt")
          (all-from-out "transport.rkt"))

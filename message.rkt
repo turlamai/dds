@@ -49,16 +49,25 @@
          (struct-out param)
          pid-pad pid-sentinel pid-topic-name pid-type-name
          pid-protocol-version pid-vendorid
+         pid-reliability pid-liveliness pid-durability
+         pid-ownership pid-presentation pid-user-data pid-topic-data
          pid-participant-guid
+         pid-unicast-locator pid-multicast-locator
          pid-metatraffic-unicast-locator pid-metatraffic-multicast-locator
          pid-default-unicast-locator pid-default-multicast-locator
+         pid-expects-inline-qos
          pid-builtin-endpoints-set pid-participant-lease-duration
+         pid-endpoint-guid
          pid-key-hash pid-status-info
          param-locator param-guid param-string param-ulong param-ulonglong
          param-double param-protocol-version param-vendorid param-status-info
+         param-reliability param-durability param-endpoint-guid
          param->locator param->guid param->string param->ulong
          param->ulonglong param->double param->protocol-version param->vendorid
-         param->status-info
+         param->status-info param->reliability param->durability
+         reliability-best-effort reliability-reliable
+         durability-volatile durability-transient-local
+         durability-transient durability-persistent
          status-info-alive status-info-disposed
          encode-params decode-params param-list->payload payload->param-list)
 
@@ -101,19 +110,35 @@
 
 (struct param (pid value) #:transparent)
 
+;; ParameterId values per DDS-RTPS 2.3 table 9.32, cross-checked
+;; against the CycloneDDS enum (src/core/ddsi/src/ddsi__protocol.h)
+;; and the Wireshark RTPS dissector; the locator PIDs sit at
+;; 0x2f-0x33/0x48 (NOT 0x51-0x54, which are participant/group
+;; identity PIDs) and the lease duration is 0x2.
 (define pid-pad 0)
 (define pid-sentinel 1)
+(define pid-participant-lease-duration #x0002)
 (define pid-topic-name #x0005)
 (define pid-type-name #x0007)
 (define pid-protocol-version #x0015)
 (define pid-vendorid #x0016)
+(define pid-reliability #x001a)
+(define pid-liveliness #x001b)
+(define pid-durability #x001d)
+(define pid-ownership #x001f)
+(define pid-presentation #x0021)
+(define pid-user-data #x002c)
+(define pid-topic-data #x002e)
+(define pid-unicast-locator #x002f)
+(define pid-multicast-locator #x0030)
+(define pid-default-unicast-locator #x0031)
+(define pid-metatraffic-unicast-locator #x0032)
+(define pid-metatraffic-multicast-locator #x0033)
+(define pid-expects-inline-qos #x0043)
+(define pid-default-multicast-locator #x0048)
 (define pid-participant-guid #x0050)
-(define pid-metatraffic-unicast-locator #x0051)
-(define pid-metatraffic-multicast-locator #x0052)
-(define pid-default-unicast-locator #x0053)
-(define pid-default-multicast-locator #x0054)
 (define pid-builtin-endpoints-set #x0058)
-(define pid-participant-lease-duration #x0059)
+(define pid-endpoint-guid #x005a)
 (define pid-key-hash #x0070)
 (define pid-status-info #x0071)
 
@@ -147,6 +172,52 @@
 
 (define status-info-alive (param-status-info #f))
 (define status-info-disposed (param-status-info #t))
+
+;; ------------------------------------------------------------------
+;; QoS parameter values (the small subset SEDP announces)
+
+(define reliability-best-effort 1)
+(define reliability-reliable 2)
+(define durability-volatile 1)
+(define durability-transient-local 2)
+(define durability-transient 3)
+(define durability-persistent 4)
+
+(define (reliability-kind-code kind)
+  (case kind
+    [(best-effort) reliability-best-effort]
+    [(reliable) reliability-reliable]
+    [else (raise-argument-error 'param-reliability "'best-effort/'reliable" kind)]))
+
+;; Duration_t on the wire: seconds (i32) + nanoseconds (u32)
+(define (duration->bytes secs)
+  (define s (exact->inexact secs))
+  (define whole (inexact->exact (floor s)))
+  (define nanos (inexact->exact (floor (* 1000000000 (- s whole)))))
+  (bytes-append (integer->bytes whole 4 #t)
+                (integer->bytes nanos 4 #t)))
+
+;; ReliabilityQosPolicy: kind (u32) + max blocking time (Duration_t)
+(define (param-reliability [kind 'reliable] [max-blocking-secs 0.1])
+  (param pid-reliability
+         (bytes-append (integer->bytes (reliability-kind-code kind) 4 #t)
+                       (duration->bytes max-blocking-secs))))
+
+;; DurabilityQosPolicy: kind (u32)
+(define (param-durability [kind 'volatile])
+  (define code
+    (case kind
+      [(volatile) durability-volatile]
+      [(transient-local) durability-transient-local]
+      [(transient) durability-transient]
+      [(persistent) durability-persistent]
+      [else (raise-argument-error 'param-durability
+                                  "'volatile/'transient-local/'transient/'persistent"
+                                  kind)]))
+  (param pid-durability (integer->bytes code 4 #t)))
+
+;; endpoint announcement helper: just param-guid with PID_ENDPOINT_GUID
+(define (param-endpoint-guid g) (param-guid pid-endpoint-guid g))
 
 (define (check-parameter-width who pid v width)
   (define lim (arithmetic-shift 1 (* 8 width)))
@@ -185,6 +256,24 @@
   ;; returns (values disposed? instance-state)
   (values (= 1 (bytes-ref (param-value p) 0))
           (bytes-ref (param-value p) 4)))
+
+(define (param->reliability p [le? #t])
+  ;; returns (values kind max-blocking-secs); kind is the raw policy
+  ;; code (1 = best effort, 2 = reliable)
+  (define bs (param-value p))
+  (define (u32-at off)
+    (if le?
+        (+ (bytes-ref bs off)
+           (arithmetic-shift (bytes-ref bs (+ off 1)) 8)
+           (arithmetic-shift (bytes-ref bs (+ off 2)) 16)
+           (arithmetic-shift (bytes-ref bs (+ off 3)) 24))
+        (bytes->u32 bs off)))
+  (values (u32-at 0)
+          (+ (u32-at 4) (/ (u32-at 8) 1e9))))
+
+(define (param->durability p [le? #t])
+  ;; returns the raw policy code (1 volatile, 2 transient-local, ...)
+  (param->ulong p le?))
 
 (define (bytes->u32le bs [off 0])
   (+ (bytes-ref bs off)
@@ -268,8 +357,9 @@
 (define (seqnumset->cursor c s)
   (sn->cursor c (seqnumset-base s))
   (define nb (seqnumset-num-bits s))
-  (unless (and (exact-positive-integer? nb) (<= nb 256))
-    (raise-argument-error 'seqnumset->cursor "numBits in 1..256" nb))
+  ;; numBits 0 (empty state, e.g. a final ACKNACK) is legal
+  (unless (and (exact-nonnegative-integer? nb) (<= nb 256))
+    (raise-argument-error 'seqnumset->cursor "numBits in 0..256" nb))
   (define words (seqnumset-words s))
   (unless (= (length words) (ceiling (/ nb 32)))
     (raise-argument-error 'seqnumset->cursor

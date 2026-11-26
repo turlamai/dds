@@ -16,7 +16,7 @@ communication bindings for Racket-based tooling.
 |---|---|---|
 | P0 | CDR/XCDR1 codec, encapsulations, alignment | done |
 | P1 | RTPS messages, UDP transport, SPDP discovery | done |
-| P2 | SEDP endpoint discovery, reliable protocol subset (heartbeat/acknack/gap) | planned |
+| P2 | SEDP endpoint discovery, reliable protocol subset (heartbeat/acknack/gap) | done |
 | P3 | QoS subset (reliable, transient-local, keep-last), programmatic topic types | planned |
 | P4 | Tooling: domain monitor, CDR dissector, replay | planned |
 
@@ -27,8 +27,9 @@ is the mapping engine with can/someip/dds bindings (the user-space
 take on RTA-VRTE's Signal-to-Service conversion). SEDP (P2) comes
 first — DDS delivery requires endpoint discovery.
 
-`HEARTBEAT`/`ACKNACK`/`GAP` submessages already round-trip at the wire
-layer; the state machines come with P2.
+Reliable delivery (heartbeat/acknack/gap with out-of-order
+recovery) and SEDP endpoint discovery are in; user-topic types and
+QoS come with P3.
 
 ## Example
 

@@ -64,7 +64,7 @@
          default-discovery-multicast-address
          default-builtin-endpoints-set
          builtin-endpoint-set?
-         check-prefix)
+         check-prefix check-entity)
 
 (module+ test (require rackunit))
 
@@ -237,12 +237,17 @@
 (define builtin-endpoint-participant-message-writer (arithmetic-shift 1 10))
 (define builtin-endpoint-participant-message-reader (arithmetic-shift 1 11))
 
-;; What this package speaks today: SPDP now, SEDP and participant
-;; messages on the roadmap; announce what is actually implemented so
-;; peers do not open endpoints that never answer.
+;; What this package speaks today: SPDP + SEDP (endpoint discovery);
+;; participant messages come with the liveliness layer. Announce what
+;; is actually implemented so peers do not open endpoints that never
+;; answer.
 (define default-builtin-endpoints-set
   (bitwise-ior builtin-endpoint-participant-announcer
-               builtin-endpoint-participant-detector))
+               builtin-endpoint-participant-detector
+               builtin-endpoint-publications-writer
+               builtin-endpoint-publications-detector
+               builtin-endpoint-subscriptions-writer
+               builtin-endpoint-subscriptions-detector))
 
 ;; ------------------------------------------------------------------
 ;; Tests

@@ -38,6 +38,8 @@
          (struct-out spdp-writer)
          make-spdp-writer
          spdp-writer-announce!
+         spdp-writer-add-target!
+         spdp-writer-remove-target!
          spdp-writer-dispose!
          spdp-writer-stop!
          (struct-out spdp-reader)
@@ -175,6 +177,8 @@
    data           ; participant-data? what we announce
    period         ; seconds between steady-state announcements
    send!          ; (-> bytes? any/c) transport sink (multicast + targets)
+   send-target!   ; (-> host-string? port? bytes? any/c) or #f (unicast)
+   targets        ; box: list of (list host port) unicast announce targets
    seq            ; box: announcement sequence number
    thread
    closed?)
@@ -201,7 +205,8 @@
          #:default-multicast [default-multicast #f]
          #:period [period 5.0]
          #:burst [burst 3]
-         #:burst-interval [burst-interval 1.0])
+         #:burst-interval [burst-interval 1.0]
+         #:send-target! [send-target! #f])
   (unless (procedure? send!)
     (raise-argument-error 'make-spdp-writer "procedure?" send!))
   (unless (and (real? period) (positive? period))
@@ -222,7 +227,8 @@
      default-multicast))
   (define w
     (spdp-writer (make-rtps-header (participant-data-guid-prefix data) vendor-id)
-                 domain-id data period send! (box 0) #f #f))
+                 domain-id data period send! send-target!
+                 (box '()) (box 0) #f #f))
   (define worker
     (thread
      (lambda ()
@@ -265,6 +271,26 @@
 
 ;; Send one announcement now.
 (define (spdp-writer-announce! w) (announce w))
+
+;; Add a unicast announce target (host, port) - typically the
+;; metatraffic unicast locator of a remote participant learned from
+;; SPDP, so announcements reach peers in multicast-less topologies.
+;; Duplicate targets are ignored; with `send-target!` wired, one
+;; announcement goes straight to the new target.
+(define (spdp-writer-add-target! w host port)
+  (define key (list host port))
+  (unless (member key (unbox (spdp-writer-targets w)))
+    (set-box! (spdp-writer-targets w) (cons key (unbox (spdp-writer-targets w))))
+    (when (spdp-writer-send-target! w)
+      (set-box! (spdp-writer-seq w) (add1 (unbox (spdp-writer-seq w))))
+      ((spdp-writer-send-target! w) host port
+       (encode-rtps-message
+        (spdp-writer-header w)
+        (list (spdp-data-sub w (unbox (spdp-writer-seq w)) #f)))))))
+
+(define (spdp-writer-remove-target! w host port)
+  (set-box! (spdp-writer-targets w)
+            (remove (list host port) (unbox (spdp-writer-targets w)))))
 
 ;; Announce disposal (removes this participant from discovery records)
 ;; and stop the periodic announcements.
@@ -486,6 +512,24 @@
   (define-values (d0 disp0 key0)
     (parse-spdp-data (data-sub entity-id-unknown entity-id-unknown 1 '() #f #f)))
   (check-false d0) (check-false disp0) (check-false key0)
+
+  ;; unicast announce targets: a new target gets one direct announce
+  (define targeted (box '()))
+  (define w3
+    (make-spdp-writer
+     #:send! (lambda (bs) (void))
+     #:send-target! (lambda (host port bs)
+                      (set-box! targeted (cons (list host port) (unbox targeted))))
+     #:guid-prefix (random-guid-prefix vendor)
+     #:period 3600.0
+     #:burst 0))
+  (spdp-writer-add-target! w3 "192.168.1.7" 7401)
+  (check-equal? (unbox targeted) (list (list "192.168.1.7" 7401))
+                "a new unicast target receives one announcement")
+  (spdp-writer-add-target! w3 "192.168.1.7" 7401)
+  (check-equal? (length (unbox targeted)) 1 "duplicate targets are ignored")
+  (spdp-writer-remove-target! w3 "192.168.1.7" 7401)
+  (spdp-writer-stop! w3)
 
   ;; payload without a participant guid is malformed
   (check-exn exn:fail:dds:malformed?
