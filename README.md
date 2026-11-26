@@ -17,7 +17,7 @@ communication bindings for Racket-based tooling.
 | P0 | CDR/XCDR1 codec, encapsulations, alignment | done |
 | P1 | RTPS messages, UDP transport, SPDP discovery | done |
 | P2 | SEDP endpoint discovery, reliable protocol subset (heartbeat/acknack/gap) | done |
-| P3 | QoS subset (reliable, transient-local, keep-last), programmatic topic types | planned |
+| P3 | QoS subset (reliable, transient-local, keep-last), programmatic topic types | done |
 | P4 | Tooling: domain monitor, CDR dissector, replay | planned |
 
 The SOME/IP-DDS bridge and the CAN signal side land as separate
@@ -27,30 +27,40 @@ is the mapping engine with can/someip/dds bindings (the user-space
 take on RTA-VRTE's Signal-to-Service conversion). SEDP (P2) comes
 first — DDS delivery requires endpoint discovery.
 
-Reliable delivery (heartbeat/acknack/gap with out-of-order
-recovery) and SEDP endpoint discovery are in; user-topic types and
-QoS come with P3.
+Reliable delivery, SEDP endpoint discovery, a topic type DSL and a
+minimal participant/topic pub/sub API (reliable, transient-local,
+keep-last) are in; tooling comes with P4.
 
 ## Example
 
 ```racket
 (require dds)
 
-;; listen for participants on the discovery multicast
-(define-values (reader handler) (make-spdp-reader #:event! println))
+(define speed-type
+  (struct-t (struct-member 'kph u16-t)
+            (struct-member 'label string-t)))
 
-(define ep
-  (make-rtps-endpoint
-   #:handler (lambda (header subs sender) (handler header subs sender))))
+;; one participant: endpoint + SPDP + SEDP wired together
+(define p (make-participant))
 
-;; announce ourselves on the same group
-(define writer
-  (make-spdp-writer
-   #:send! (lambda (bs) (endpoint-send-multicast! ep "239.255.0.1" 7400 bs))))
+(define t (participant-topic! p "Speed" speed-type
+            #:reliability 'reliable
+            #:durability 'transient-local
+            #:history-depth 5))
+
+;; publish
+(define w (topic-writer! t))
+(writer-write! w '((kph . 42) (label . "front-left")))
+
+;; subscribe (including late joiners: they receive the retained
+;; transient-local history)
+(topic-reader! t (lambda (value sn) (printf "~a\n" value)))
 ```
 
-Any Cyclone DDS / Fast DDS / ROS 2 participant on the segment appears
-in the reader's records (and vice versa: they see our announcements).
+Lower layers stay exposed: `make-spdp-reader`/`make-rtps-endpoint`
+for domain monitoring, `(dds message)` for raw RTPS, `(dds cdr)` for
+CDR payloads. Any Cyclone DDS / Fast DDS / ROS 2 participant on the
+segment appears in SPDP discovery (and vice versa).
 
 ## Design notes
 

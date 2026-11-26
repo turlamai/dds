@@ -4,7 +4,7 @@
 
 (define collection "dds")
 
-(define version "0.2")
+(define version "0.3")
 
 ;; The shipped collection depends on base alone: pure Racket, no foreign
 ;; libraries. rackunit-lib stays a runtime dep because test/ ships inside
@@ -17,7 +17,7 @@
 (define scribblings '(("scribblings/dds.scrbl" ())))
 
 (define pkg-desc
-  "DDS/RTPS protocol stack: CDR (XCDR1) codec, RTPS 2.3 wire format, SPDP participant discovery, SEDP endpoint discovery, reliable writer/reader state machines, UDP endpoints. Pure Racket, wire-compatible with the DDS ecosystem.")
+  "DDS/RTPS protocol stack: CDR (XCDR1) codec, RTPS 2.3 wire format, SPDP/SEDP discovery, reliable writer/reader state machines, QoS subset (reliable, transient-local, keep-last), topic type DSL and a minimal participant/topic pub/sub API. Pure Racket, wire-compatible with the DDS ecosystem.")
 
 (define pkg-authors '(turlamai))
 

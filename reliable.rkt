@@ -107,9 +107,11 @@
    send!           ; (-> bytes? any/c) route an encoded RTPS message
    make-header     ; (-> rtps-header?) header for outbound messages
    period          ; seconds between heartbeats, #f = manual only
+   durability      ; 'volatile or 'transient-local (QoS history policy)
+   depth           ; keep-last depth (#f = keep-all), see prune!
    count           ; heartbeat counter
    next-sn         ; next sequence number to assign (starts at 1)
-   history         ; hash: sn -> (list qos-params payload-bytes key-guid)
+   history         ; hash: sn -> (list qos-params payload-bytes key-guid disposed?)
    last-acked      ; highest sn known acked by every reader so far
    thread
    closed?)
@@ -120,12 +122,21 @@
 ;; the RTPS header (vendor id, guid prefix) so one writer serves one
 ;; endpoint. `period` schedules automatic heartbeats; pass #f to
 ;; drive heartbeats manually.
+;;
+;; History QoS (DDS-RTPS 2.3 ch. 2.2.3 / DDS-RTPS 8.4.2.2.3):
+;;   `durability` 'volatile prunes acked samples immediately (the
+;;   default), 'transient-local keeps samples for late-joining
+;;   readers and prunes ONLY by `depth`
+;;   `depth` keep-last N (#f = keep-all): samples beyond the newest N
+;;   are dropped as new ones arrive, whatever the durability
 (define (make-reliable-writer
          #:writer-id writer-id
          #:writer-prefix writer-prefix
          #:send! send!
          #:make-header make-header
-         #:heartbeat-period [period #f])
+         #:heartbeat-period [period #f]
+         #:durability [durability 'volatile]
+         #:history-depth [depth #f])
   (unless (procedure? send!)
     (raise-argument-error 'make-reliable-writer "procedure?" send!))
   (unless (procedure? make-header)
@@ -134,8 +145,13 @@
   (check-prefix 'make-reliable-writer writer-prefix)
   (when (and period (not (and (real? period) (positive? period))))
     (raise-argument-error 'make-reliable-writer "positive seconds or #f" period))
+  (unless (memq durability '(volatile transient-local))
+    (raise-argument-error 'make-reliable-writer "'volatile/'transient-local" durability))
+  (when (and depth (not (exact-positive-integer? depth)))
+    (raise-argument-error 'make-reliable-writer "exact positive depth or #f" depth))
   (define w
     (reliable-writer writer-id writer-prefix send! make-header period
+                     durability depth
                      (box 0) (box 1) (make-hash) (box 0) #f #f))
   (when period
     (define worker
@@ -155,8 +171,21 @@
   (define sn (unbox (reliable-writer-next-sn w)))
   (set-box! (reliable-writer-next-sn w) (add1 sn))
   (hash-set! (reliable-writer-history w) sn (list qos payload key-guid disposed?))
+  (prune-history! w)
   (send-data! w sn)
   sn)
+
+;; History pruning: keep-last depth bounds the history regardless of
+;; durability (oldest samples beyond the newest N go); the ack-driven
+;; prune in on-acknack! only applies to volatile writers.
+(define (prune-history! w)
+  (define depth (reliable-writer-depth w))
+  (when depth
+    (define keys (sort (hash-keys (reliable-writer-history w)) <))
+    (when (> (length keys) depth)
+      (for ([sn keys]
+            [_i (in-range (- (length keys) depth))])
+        (hash-remove! (reliable-writer-history w) sn)))))
 
 ;; Publish a sample: assign the next sequence number, cache it for
 ;; retransmission, emit DATA (Q|D; inlineQos carries the endpoint key
@@ -230,16 +259,20 @@
     (when (hash-has-key? (reliable-writer-history w) sn)
       (send-data! w sn)))
   ;; final=1 with an empty state: the reader holds everything below
-  ;; the bitmap base
+  ;; the bitmap base. Volatile writers prune acked samples right away;
+  ;; transient-local writers keep them for late joiners and rely on
+  ;; keep-last depth alone. NOTE: no heartbeat here - the periodic
+  ;; thread covers the cadence, and heartbeating on acks livelocks
+  ;; (heartbeat -> final ack -> heartbeat -> ...) once the reader is
+  ;; complete.
   (when (and (acknack-sub-final? ack) (null? requested))
     (define base (seqnumset-base state))
     (when (> (sub1 base) (unbox (reliable-writer-last-acked w)))
       (set-box! (reliable-writer-last-acked w) (sub1 base))
-      (for ([sn (in-list (hash-keys (reliable-writer-history w)))])
-        (when (< sn base)
-          (hash-remove! (reliable-writer-history w) sn))))
-    (when (reliable-writer-period w)
-      (reliable-writer-heartbeat! w))))
+      (when (eq? (reliable-writer-durability w) 'volatile)
+        (for ([sn (in-list (hash-keys (reliable-writer-history w)))])
+          (when (< sn base)
+            (hash-remove! (reliable-writer-history w) sn)))))))
 
 ;; Re-send every sample in the history plus a heartbeat - used when a
 ;; new remote reader appears (a late-joining participant must receive
@@ -546,4 +579,48 @@
   (reliable-reader-on-data! r (mk-data 9))
   (check-equal? (map car (reverse (unbox delivered))) '(1 2 3 6 9)
                 "gap-declared sns never block the run")
-  (reliable-reader-close! r))
+  (reliable-reader-close! r)
+
+  ;; QoS: keep-last depth bounds the history whatever the ack state
+  (define wl (make-reliable-writer
+              #:writer-id entity-id-sedp-publications-writer
+              #:writer-prefix (make-bytes 12 #x33)
+              #:send! void
+              #:make-header (lambda () (make-rtps-header (make-bytes 12 #x33)))
+              #:durability 'transient-local
+              #:history-depth 2))
+  (check-equal? (reliable-writer-write! wl #"a") 1)
+  (check-equal? (reliable-writer-write! wl #"b") 2)
+  (check-equal? (reliable-writer-write! wl #"c") 3)
+  (check-equal? (sort (hash-keys (reliable-writer-history wl)) <) '(2 3)
+                "keep-last 2 retains only the newest samples")
+  (reliable-writer-close! wl)
+
+  ;; QoS: volatile prunes acked samples, transient-local keeps them
+  (define (mk-w dur)
+    (make-reliable-writer
+     #:writer-id entity-id-sedp-publications-writer
+     #:writer-prefix (make-bytes 12 #x33)
+     #:send! void
+     #:make-header (lambda () (make-rtps-header (make-bytes 12 #x33)))
+     #:durability dur))
+  (define wv (mk-w 'volatile))
+  (check-equal? (reliable-writer-write! wv #"one") 1)
+  (check-equal? (reliable-writer-write! wv #"two") 2)
+  (reliable-writer-on-acknack!
+   wv (acknack-sub entity-id-sedp-publications-reader
+                   entity-id-sedp-publications-writer
+                   (seqnumset 3 0 '()) 1 #t))
+  (check-equal? (hash-count (reliable-writer-history wv)) 0
+                "volatile writer drops fully acked samples")
+  (reliable-writer-close! wv)
+  (define wt (mk-w 'transient-local))
+  (check-equal? (reliable-writer-write! wt #"one") 1)
+  (check-equal? (reliable-writer-write! wt #"two") 2)
+  (reliable-writer-on-acknack!
+   wt (acknack-sub entity-id-sedp-publications-reader
+                   entity-id-sedp-publications-writer
+                   (seqnumset 3 0 '()) 1 #t))
+  (check-equal? (sort (hash-keys (reliable-writer-history wt)) <) '(1 2)
+                "transient-local writer retains acked samples for late joiners")
+  (reliable-writer-close! wt))

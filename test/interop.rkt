@@ -28,6 +28,7 @@
 
 (require racket/list
          racket/set
+         "../topic-type.rkt"
          "../cdr.rkt"
          "../entities.rkt"
          "../logging.rkt"
@@ -35,6 +36,7 @@
          "../reliable.rkt"
          "../sedp.rkt"
          "../spdp.rkt"
+         "../topic.rkt"
          "../transport.rkt")
 
 (module+ test
@@ -265,4 +267,68 @@
   (reliable-writer-close! user-writer-a)
   (reliable-reader-close! user-reader-b)
   (endpoint-close! ep-a)
-  (endpoint-close! ep-b))
+  (endpoint-close! ep-b)
+
+  ;; ---- P3: participant/topic API over real UDP --------------------
+  ;; two full participants exchange a typed user topic (reliable +
+  ;; transient-local), including a late joiner receiving history
+  (define speed-type
+    (struct-t (struct-member 'kph u16-t)
+              (struct-member 'label string-t)))
+  (define p-a (make-participant #:bind-port 0))
+  (define p-b (make-participant #:bind-port 0))
+  (spdp-writer-add-target! (participant-spdp-w p-a) "127.0.0.1"
+                           (endpoint-udp-port (participant-endpoint p-b)))
+  (spdp-writer-add-target! (participant-spdp-w p-b) "127.0.0.1"
+                           (endpoint-udp-port (participant-endpoint p-a)))
+  (spdp-writer-announce! (participant-spdp-w p-a))
+  (spdp-writer-announce! (participant-spdp-w p-b))
+  (check-true (wait-until (lambda ()
+                            (and (positive? (hash-count (participant-peers p-a)))
+                                 (positive? (hash-count (participant-peers p-b))))))
+              "participants discover each other (topic API)")
+
+  (define t-a (participant-topic! p-a "Speed" speed-type
+                                  #:durability 'transient-local
+                                  #:history-depth 5))
+  (define t-b (participant-topic! p-b "Speed" speed-type
+                                  #:durability 'transient-local
+                                  #:history-depth 5))
+  (define got (box '()))
+  (topic-reader! t-b (lambda (v sn)
+                       (set-box! got (cons (cons sn v) (unbox got)))))
+  (check-true (wait-until (lambda ()
+                            (not (null? (hash-keys
+                                         (writer-handle-targets
+                                          (topic-writer-handle t-a)))))))
+              "SEDP match converged (topic API)")
+  (check-equal? (writer-write! (topic-writer! t-a) '((kph . 42) (label . "a"))) 1)
+  (check-equal? (writer-write! (topic-writer! t-a) '((kph . 43) (label . "b"))) 2)
+  (check-true (wait-until (lambda () (>= (length (unbox got)) 2)))
+              "typed reliable topic delivers in order")
+  (check-equal? (reverse (unbox got))
+                (list (cons 1 '((kph . 42) (label . "a")))
+                      (cons 2 '((kph . 43) (label . "b")))))
+
+  ;; late joiner receives the transient-local history
+  (define p-c (make-participant #:bind-port 0))
+  (spdp-writer-add-target! (participant-spdp-w p-a) "127.0.0.1"
+                           (endpoint-udp-port (participant-endpoint p-c)))
+  (spdp-writer-add-target! (participant-spdp-w p-c) "127.0.0.1"
+                           (endpoint-udp-port (participant-endpoint p-a)))
+  (spdp-writer-announce! (participant-spdp-w p-a))
+  (spdp-writer-announce! (participant-spdp-w p-c))
+  (check-true (wait-until (lambda () (positive? (hash-count (participant-peers p-c)))))
+              "late joiner discovers A")
+  (define late-got (box '()))
+  (topic-reader! (participant-topic! p-c "Speed" speed-type
+                                    #:durability 'transient-local
+                                    #:history-depth 5)
+                 (lambda (v sn) (set-box! late-got (cons sn (unbox late-got)))))
+  (check-true (wait-until (lambda () (>= (length (unbox late-got)) 2)))
+              "late joiner receives the transient-local history")
+  (check-equal? (reverse (unbox late-got)) '(1 2))
+
+  (participant-close! p-a)
+  (participant-close! p-b)
+  (participant-close! p-c))

@@ -144,19 +144,24 @@
   (define d
     (sedp-domain prefix header! send! (make-hash) (make-hash) (make-hash)
                  (make-hash) (make-hash) event! #f))
-  ;; built-in writers: one for publications, one for subscriptions
+  ;; built-in writers: one for publications, one for subscriptions.
+  ;; Built-in discovery endpoints are TRANSIENT_LOCAL by definition
+  ;; (DDS-RTPS 8.5.4.1): late-joining participants must receive the
+  ;; full endpoint history, so announcements survive peer acks.
   (hash-set! (sedp-domain-writers d) 'publications
              (make-reliable-writer
               #:writer-id entity-id-sedp-publications-writer
               #:writer-prefix prefix
               #:send! send!
-              #:make-header header!))
+              #:make-header header!
+              #:durability 'transient-local))
   (hash-set! (sedp-domain-writers d) 'subscriptions
              (make-reliable-writer
               #:writer-id entity-id-sedp-subscriptions-writer
               #:writer-prefix prefix
               #:send! send!
-              #:make-header header!))
+              #:make-header header!
+              #:durability 'transient-local))
   (values d (sedp-handler-proc d)))
 
 (define (sedp-handler-proc d)
